@@ -2,28 +2,67 @@ package main
 
 import (
 	"fmt"
+	"html/template"
 	"io"
+	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
-	"io/ioutil"
+	"path"
+	"strings"
 )
 
 const (
-	UPLOAD_DIR = "./uploads"
+	UPLOAD_DIR   = "./uploads"
+	TEMPLATE_DIR = "./views"
 )
+
+var templates = make(map[string]*template.Template)
+
+func init() {
+	fileInfoArr, err := ioutil.ReadDir(TEMPLATE_DIR)
+	if err != nil {
+		panic(err)
+		return
+	}
+
+	var templateName, templatePath string
+	for _, fileInfo := range fileInfoArr {
+		templateName = fileInfo.Name()
+		if ext := path.Ext(templateName); ext != ".html" {
+			continue
+		}
+
+		templatePath = TEMPLATE_DIR + "/" + templateName
+		log.Println("Loading template:", templatePath)
+		t := template.Must(template.ParseFiles(templatePath))
+		tmpl := getFileName(templateName)
+		templates[tmpl] = t
+	}
+}
+
+func getFileName(fullFileName string) string {
+	//fullFilename := "test.txt"
+	//fmt.Println("fullFilename =", fullFilename)
+	var filenameWithSuffix string
+	filenameWithSuffix = path.Base(fullFileName)
+	//fmt.Println("filenameWithSuffix =", filenameWithSuffix)
+	var fileSuffix string
+	fileSuffix = path.Ext(filenameWithSuffix)
+	//fmt.Println("fileSuffix =", fileSuffix)
+
+	var fileNameOnly string
+	fileNameOnly = strings.TrimSuffix(filenameWithSuffix, fileSuffix)
+	fmt.Println("fileNameOnly =", fileNameOnly)
+	return fileNameOnly
+}
 
 func uploadHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "GET" {
-		io.WriteString(w, "<body>")
-		io.WriteString(w, "<form method=\"POST\" action=\"/upload\" "+
-			" enctype=\"multipart/form-data\" >"+
-			"Choose an impage to upload: <input name=\"image\" type=\"file\" />"+
-			"<input type=\"submit\" value=\"Upload\" />"+
-			"</form>")
-
-		io.WriteString(w, "</body>")
-
+		if err := renderHtml(w, "upload", nil); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 		return
 	}
 
@@ -80,22 +119,37 @@ func isExists(path string) bool {
 	return os.IsExist(err)
 }
 
-func listHandler(w http.ResponseWriter, r*http.Request) {
+func listHandler(w http.ResponseWriter, r *http.Request) {
+	fmt.Println("listHandler func")
 	fileInfoArr, err := ioutil.ReadDir(UPLOAD_DIR)
-	if err!=nil{
+	if err != nil {
 		http.Error(w, err.Error(),
 			http.StatusInternalServerError)
 		return
 	}
 
-	var listHtml string
-	for _, fileInfo := range fileInfoArr {
-		imgid := fileInfo.Name()
-		fmt.Printf("%s\n", imgid)
-		listHtml += "<li><a href = \"/view?id=" + imgid + "\">imgid</a></li>"
-	}
+	locals := make(map[string]interface{})
+	images := []string{}
 
-	io.WriteString(w, "<body><ol>" + listHtml + "</ol></body>")
+	for _, fileInfo := range fileInfoArr {
+
+		images = append(images, fileInfo.Name())
+	}
+	locals["images"] = images
+
+	if err = renderHtml(w, "list", locals); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+func renderHtml(w http.ResponseWriter, tmpl string,
+	locals map[string]interface{}) (err error) {
+	t, err := template.ParseFiles(tmpl + ".html")
+	if err != nil {
+		return
+	}
+	err = t.Execute(w, locals)
+	return
 }
 
 func main() {
