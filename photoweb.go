@@ -13,12 +13,14 @@ import (
 )
 
 const (
+	ListDir      = 0x0001
 	UPLOAD_DIR   = "./uploads"
 	TEMPLATE_DIR = "./views"
 )
 
 var templates = make(map[string]*template.Template)
 
+//初始化页面模板
 func init() {
 	fileInfoArr, err := ioutil.ReadDir(TEMPLATE_DIR)
 	if err != nil {
@@ -41,6 +43,21 @@ func init() {
 	}
 }
 
+//
+func staticDirHandler(mux *http.ServeMux, prefix string, staticDir string, flags int) {
+	mux.HandleFunc(prefix, func(w http.ResponseWriter, r *http.Request) {
+		file := staticDir + r.URL.Path[len(prefix)-1:]
+		if (flags & ListDir) == 0 {
+			if exists := isExists(file); !exists {
+				http.NotFound(w, r)
+				return
+			}
+		}
+		http.ServeFile(w, r, file)
+	})
+}
+
+//获取文件名（去除后缀）
 func getFileName(fullFileName string) string {
 	//fullFilename := "test.txt"
 	//fmt.Println("fullFilename =", fullFilename)
@@ -57,12 +74,11 @@ func getFileName(fullFileName string) string {
 	return fileNameOnly
 }
 
+//上传照片方法
 func uploadHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "GET" {
-		if err := renderHtml(w, "upload", nil); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
+		err := renderHtml(w, "upload", nil)
+		check(err)
 		return
 	}
 
@@ -77,24 +93,18 @@ func uploadHandler(w http.ResponseWriter, r *http.Request) {
 		filename := h.Filename
 		defer f.Close()
 		t, err := os.Create(UPLOAD_DIR + "/" + filename)
-		if err != nil {
-			http.Error(w, err.Error(),
-				http.StatusInternalServerError)
-			return
-		}
+		check(err)
 		defer t.Close()
 
-		if _, err := io.Copy(t, f); err != nil {
-			http.Error(w, err.Error(),
-				http.StatusInternalServerError)
-			return
-		}
+		_, err = io.Copy(t, f)
+		check(err)
 
 		http.Redirect(w, r, "/view?id="+filename,
 			http.StatusFound)
 	}
 }
 
+//查看照片方法
 func viewHandler(w http.ResponseWriter, r *http.Request) {
 	imageId := r.FormValue("id")
 	imagePath := UPLOAD_DIR + "/" + imageId
@@ -119,14 +129,11 @@ func isExists(path string) bool {
 	return os.IsExist(err)
 }
 
+//获取照片列表
 func listHandler(w http.ResponseWriter, r *http.Request) {
 	fmt.Println("listHandler func")
 	fileInfoArr, err := ioutil.ReadDir(UPLOAD_DIR)
-	if err != nil {
-		http.Error(w, err.Error(),
-			http.StatusInternalServerError)
-		return
-	}
+	check(err)
 
 	locals := make(map[string]interface{})
 	images := []string{}
@@ -137,25 +144,47 @@ func listHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	locals["images"] = images
 
-	if err = renderHtml(w, "list", locals); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-	}
+	err = renderHtml(w, "list", locals)
+	check(err)
 }
 
 func renderHtml(w http.ResponseWriter, tmpl string,
 	locals map[string]interface{}) (err error) {
-	t, err := template.ParseFiles(tmpl + ".html")
-	if err != nil {
-		return
-	}
-	err = t.Execute(w, locals)
+	err = templates[tmpl].Execute(w, locals)
 	return
 }
 
+func check(err error) {
+	if err != nil {
+		panic(err)
+	}
+}
+
+//返回闭包函数
+func safeHandler(fn http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if e, ok := recover().(error); ok {
+				http.Error(w, e.Error(), http.StatusInternalServerError)
+				//自定义错误
+				/*
+					w.WriteeHeader(http.StatusInternalServerError)
+					renderHtml(w, "error", e)
+				*/
+				//logging
+				log.Println("WARN: panic in %v - %v", fn, e)
+			}
+		}()
+		fn(w, r)
+	}
+}
+
 func main() {
-	http.HandleFunc("/upload", uploadHandler)
-	http.HandleFunc("/view", viewHandler)
-	http.HandleFunc("/", listHandler)
+	mux := http.NewServeMux()
+	staticDirHandler(mux, "/asserts/", "./public", 0)
+	http.HandleFunc("/upload", safeHandler(uploadHandler))
+	http.HandleFunc("/view", safeHandler(viewHandler))
+	http.HandleFunc("/", safeHandler(listHandler))
 	err := http.ListenAndServe(":8080", nil)
 
 	if err != nil {
